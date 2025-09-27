@@ -7,14 +7,13 @@ app = Flask(__name__)
 
 def parse_text(text):
     """
-    Função principal para extrair informações do texto de uma página do PDF. (v2)
+    Função principal para extrair informações do texto de uma página do PDF. (v3)
     """
     # Regex para informações do cabeçalho
     phone_pattern = re.compile(r'No\.\s*(\+\d+)')
     total_volume_pattern = re.compile(r'Volume total:\s*([\d,.]+)\s*MB', re.IGNORECASE)
     
     # Regex para as linhas de dados, agora mais robusta para capturar nomes de países com quebras de linha.
-    # A expressão (.*?) captura o nome do país de forma não-gananciosa.
     data_line_pattern = re.compile(r'^\s*\d+\s+(\d{2}/\d{2}/\d{4})\s+(.*?)\s+([\d.]+\s*MB)', re.MULTILINE)
 
     phone_match = phone_pattern.search(text)
@@ -32,12 +31,11 @@ def parse_text(text):
     # --- Extração e Limpeza do Volume Total ---
     total_volume = None
     if total_volume_match:
-        total_volume_raw = total_volume_match.group(1) # Ex: "2,0053.37"
-        # Remove a vírgula do milhar para poder converter para float
-        total_volume_clean = total_volume_raw.replace(',', '') # -> "20053.37"
+        total_volume_raw = total_volume_match.group(1)
+        total_volume_clean = total_volume_raw.replace(',', '')
         total_volume_float = float(total_volume_clean)
-        # Formata para o padrão brasileiro (duas casas decimais com vírgula)
-        total_volume = f"{total_volume_float:.2f}".replace('.', ',') + "MB"
+        # Formata para o padrão brasileiro (duas casas decimais com vírgula) - SEM MB
+        total_volume = f"{total_volume_float:.2f}".replace('.', ',')
 
     if not phone_number or not total_volume:
         return []
@@ -49,13 +47,13 @@ def parse_text(text):
     for match in matches:
         # --- Limpeza do País ---
         country_raw = match[1]
-        # Substitui quebras de linha e múltiplos espaços por um único espaço
         country = re.sub(r'\s+', ' ', country_raw).strip()
 
         # --- Limpeza do Realizado ---
-        realizado_raw = match[2].replace('MB', '').strip() # Ex: "1750.39"
-        realizado_float = float(realizado_raw) # O ponto já é o decimal correto
-        realizado = f"{realizado_float:.2f}".replace('.', ',') + "MB"
+        realizado_raw = match[2].replace('MB', '').strip()
+        realizado_float = float(realizado_raw)
+        # Formata para o padrão brasileiro (duas casas decimais com vírgula) - SEM MB
+        realizado = f"{realizado_float:.2f}".replace('.', ',')
 
         extracted_data.append({
             "numero_do_telefone": phone_number,
