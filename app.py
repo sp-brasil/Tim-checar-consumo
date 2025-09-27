@@ -7,17 +7,13 @@ app = Flask(__name__)
 
 def parse_text(text):
     """
-    Função principal para extrair informações do texto de uma página do PDF. (v3)
+    Função principal para extrair informações do texto de uma página do PDF. (v4 - Agregado)
     """
-    # Regex para informações do cabeçalho
+    # Regex para o número de telefone e para as linhas de dados
     phone_pattern = re.compile(r'No\.\s*(\+\d+)')
-    total_volume_pattern = re.compile(r'Volume total:\s*([\d,.]+)\s*MB', re.IGNORECASE)
-    
-    # Regex para as linhas de dados, agora mais robusta para capturar nomes de países com quebras de linha.
     data_line_pattern = re.compile(r'^\s*\d+\s+(\d{2}/\d{2}/\d{4})\s+(.*?)\s+([\d.]+\s*MB)', re.MULTILINE)
 
     phone_match = phone_pattern.search(text)
-    total_volume_match = total_volume_pattern.search(text)
     
     # --- Extração e Limpeza do Telefone ---
     phone_number = None
@@ -28,22 +24,15 @@ def parse_text(text):
         else:
             phone_number = phone_raw
     
-    # --- Extração e Limpeza do Volume Total ---
-    total_volume = None
-    if total_volume_match:
-        total_volume_raw = total_volume_match.group(1)
-        total_volume_clean = total_volume_raw.replace(',', '')
-        total_volume_float = float(total_volume_clean)
-        # Formata para o padrão brasileiro (duas casas decimais com vírgula) - SEM MB
-        total_volume = f"{total_volume_float:.2f}".replace('.', ',')
-
-    if not phone_number or not total_volume:
+    if not phone_number:
         return []
 
     # Encontra todas as correspondências de linhas de dados no texto da página
     matches = data_line_pattern.findall(text)
     
-    extracted_data = []
+    total_consumption = 0.0
+    chile_consumption = 0.0
+    
     for match in matches:
         # --- Limpeza do País ---
         country_raw = match[1]
@@ -52,18 +41,25 @@ def parse_text(text):
         # --- Limpeza do Realizado ---
         realizado_raw = match[2].replace('MB', '').strip()
         realizado_float = float(realizado_raw)
-        # Formata para o padrão brasileiro (duas casas decimais com vírgula) - SEM MB
-        realizado = f"{realizado_float:.2f}".replace('.', ',')
-
-        extracted_data.append({
-            "numero_do_telefone": phone_number,
-            "data": match[0],
-            "pais": country,
-            "realizado": realizado,
-            "volume_total": total_volume
-        })
         
-    return extracted_data
+        # --- Soma dos consumos ---
+        total_consumption += realizado_float
+        # Verifica se o país é "Chile" (ignorando maiúsculas/minúsculas)
+        if country.lower() == 'chile':
+            chile_consumption += realizado_float
+
+    # Formata os totais para o padrão brasileiro (duas casas decimais com vírgula)
+    formatted_total = f"{total_consumption:.2f}".replace('.', ',')
+    formatted_chile = f"{chile_consumption:.2f}".replace('.', ',')
+
+    summary_data = {
+        "numero": phone_number,
+        "consumo_total": formatted_total,
+        "consumo_chile": formatted_chile
+    }
+        
+    # Retorna uma lista com um único dicionário para simplificar o Make.com
+    return [summary_data]
 
 
 @app.route('/processar', methods=['POST'])
@@ -76,7 +72,7 @@ def process_pdf():
         return jsonify({"error": "Nome de arquivo vazio"}), 400
 
     if file and file.filename.lower().endswith('.pdf'):
-        try:
+        try
             extracted_data = []
             with pdfplumber.open(file) as pdf:
                 full_text = ""
