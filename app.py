@@ -72,7 +72,7 @@ def process_pdf():
         return jsonify({"error": "Nome de arquivo vazio"}), 400
 
     if file and file.filename.lower().endswith('.pdf'):
-        try
+        try:
             extracted_data = []
             with pdfplumber.open(file) as pdf:
                 full_text = ""
