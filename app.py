@@ -7,67 +7,55 @@ app = Flask(__name__)
 
 def parse_text(text):
     """
-    Versão 9: Lógica de 'Estado'. Identifica uma data e busca o valor 
-    de consumo nas linhas subsequentes até encontrar um MB.
+    Versão 10: Busca Global. Ignora quebras de linha e foca na proximidade de dados.
     """
-    # 1. Limpeza de caracteres que sujam a extração de tabelas
-    text = text.replace('"', '').replace("'", "")
-    lines = text.split('\n')
+    # 1. Pré-processamento: remove aspas e limpa espaços excessivos
+    clean_text = re.sub(r'\s+', ' ', text.replace('"', '').replace("'", ""))
     
-    # 2. Extração do Telefone
+    # 2. Extração do Telefone (Busca qualquer número de 10-13 dígitos após 'No.')
     phone_number = "Não encontrado"
-    phone_match = re.search(r'No\.\s*(\+?\d+)', text)
+    phone_match = re.search(r'No\.\s*\+?(55)?(\d{10,11})', clean_text)
     if phone_match:
-        raw = phone_match.group(1)
-        phone_number = raw[3:] if raw.startswith("+55") else raw
+        phone_number = phone_match.group(2) # Pega apenas o número principal
 
-    # 3. Volume do Cabeçalho como Fallback Absoluto (Ex: 7997.42MB)
+    # 3. Volume do Cabeçalho como Fallback (Backup de segurança)
     header_total = 0.0
-    header_match = re.search(r'Volume total:\s*([\d,.]+)', text, re.IGNORECASE)
+    header_match = re.search(r'Volume total:\s*([\d,.]+)', clean_text, re.IGNORECASE)
     if header_match:
         try:
             header_total = float(header_match.group(1).replace(',', ''))
         except: pass
 
-    # 4. Processamento de Linhas com 'Memória'
+    # 4. Soma de Consumo por Proximidade (Data -> Próximo MB)
     total_sum = 0.0
     chile_sum = 0.0
-    procurando_consumo = False
-    linha_com_chile = False
-
-    for line in lines:
-        line_clean = line.lower().strip()
+    
+    # Encontra todas as datas no arquivo
+    all_dates = list(re.finditer(r'\d{2}/\d{2}/\d{4}', clean_text))
+    
+    for i in range(len(all_dates)):
+        start_idx = all_dates[i].start()
+        # Define o fim da busca como a próxima data ou 200 caracteres à frente
+        end_idx = all_dates[i+1].start() if i+1 < len(all_dates) else start_idx + 200
         
-        # Identifica se a linha tem uma DATA (DD/MM/AAAA)
-        data_match = re.search(r'\d{2}/\d{2}/\d{4}', line_clean)
+        chunk = clean_text[start_idx:end_idx].lower()
         
-        if data_match:
-            procurando_consumo = True
-            linha_com_chile = 'chile' in line_clean
-            # Verifica se já tem MB na mesma linha da data
-            mb_na_linha = re.search(r'([\d.]+)\s*mb', line_clean)
-            if mb_na_linha:
-                val = float(mb_na_linha.group(1))
-                total_sum += val
-                if linha_com_chile: chile_sum += val
-                procurando_consumo = False # Já achou, desliga o alerta
+        # Ignora a data de emissão no topo do arquivo
+        if i == 0 and ("detalhamento" in chunk or "roaming" in chunk):
             continue
 
-        # Se estiver em alerta (achou data antes), procura o MB nesta linha
-        if procurando_consumo:
-            if 'chile' in line_clean: linha_com_chile = True
-            
-            mb_match = re.search(r'([\d.]+)\s*mb', line_clean)
-            if mb_match:
-                try:
-                    val = float(mb_match.group(1))
-                    total_sum += val
-                    if linha_com_chile: chile_sum += val
-                    procurando_consumo = False # Valor encontrado, desliga alerta
-                except: pass
+        # Busca o primeiro valor de MB que aparecer após a data
+        mb_match = re.search(r'([\d.]+)\s*mb', chunk)
+        if mb_match:
+            try:
+                val = float(mb_match.group(1))
+                total_sum += val
+                if 'chile' in chunk:
+                    chile_sum += val
+            except: pass
 
-    # 5. Validação Final
-    # Se a soma das linhas for muito discrepante ou zero, usa o cabeçalho
+    # 5. Lógica de Decisão
+    # Se a soma deu zero (ex: tabela ilegível), usa o valor do cabeçalho
     final_total = total_sum if total_sum > 0 else header_total
     
     return [{
@@ -86,9 +74,11 @@ def process_pdf():
             full_text = ""
             for page in pdf.pages:
                 full_text += (page.extract_text() or "") + "\n"
-            return jsonify({"dados": parse_text(full_text)}), 200
+            
+            # Executa a extração
+            dados = parse_text(full_text)
+            return jsonify({"dados": dados}), 200
     except Exception as e:
-        # Retorna o erro real para ajudar no debug
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
