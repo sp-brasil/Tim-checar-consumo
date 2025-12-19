@@ -7,68 +7,73 @@ app = Flask(__name__)
 
 def parse_text(text):
     """
-    Versão 8: Abordagem de fluxo contínuo. Busca o consumo em uma 'janela' 
-    após cada data, ignorando quebras de linha e aspas.
+    Versão 9: Lógica de 'Estado'. Identifica uma data e busca o valor 
+    de consumo nas linhas subsequentes até encontrar um MB.
     """
-    # 1. Limpeza de aspas para evitar quebras no regex
+    # 1. Limpeza de caracteres que sujam a extração de tabelas
     text = text.replace('"', '').replace("'", "")
+    lines = text.split('\n')
     
-    # 2. Extração do Telefone (Padrão: No. +55...)
-    phone_pattern = re.compile(r'No\.\s*(\+?\d+)')
-    phone_match = phone_pattern.search(text)
+    # 2. Extração do Telefone
     phone_number = "Não encontrado"
+    phone_match = re.search(r'No\.\s*(\+?\d+)', text)
     if phone_match:
-        phone_raw = phone_match.group(1)
-        phone_number = phone_raw[3:] if phone_raw.startswith("+55") else phone_raw
-    
-    # 3. Volume do Cabeçalho como Backup (Ex: 7997.42MB)
-    header_volume = 0.0
+        raw = phone_match.group(1)
+        phone_number = raw[3:] if raw.startswith("+55") else raw
+
+    # 3. Volume do Cabeçalho como Fallback Absoluto (Ex: 7997.42MB)
+    header_total = 0.0
     header_match = re.search(r'Volume total:\s*([\d,.]+)', text, re.IGNORECASE)
     if header_match:
         try:
-            header_volume = float(header_match.group(1).replace(',', ''))
+            header_total = float(header_match.group(1).replace(',', ''))
         except: pass
 
-    # 4. Processamento por 'Janelas' de Data
+    # 4. Processamento de Linhas com 'Memória'
     total_sum = 0.0
     chile_sum = 0.0
-    
-    # Localiza todas as datas (DD/MM/AAAA) e suas posições no texto
-    date_matches = list(re.finditer(r'(\d{2}/\d{2}/\d{4})', text))
-    
-    for i in range(len(date_matches)):
-        start_pos = date_matches[i].start()
-        # A janela vai desta data até a próxima data (ou fim do texto)
-        end_pos = date_matches[i+1].start() if i+1 < len(date_matches) else len(text)
-        window_text = text[start_pos:end_pos].lower()
+    procurando_consumo = False
+    linha_com_chile = False
+
+    for line in lines:
+        line_clean = line.lower().strip()
         
-        # Ignora a primeira data se for a do cabeçalho (geralmente isolada no topo)
-        if i == 0 and "detalhamento" not in window_text:
-             # Se a primeira data for apenas a data de emissão do relatório, pulamos
-             if "roaming" in window_text or "detalhamento" in window_text:
-                 continue
+        # Identifica se a linha tem uma DATA (DD/MM/AAAA)
+        data_match = re.search(r'\d{2}/\d{2}/\d{4}', line_clean)
+        
+        if data_match:
+            procurando_consumo = True
+            linha_com_chile = 'chile' in line_clean
+            # Verifica se já tem MB na mesma linha da data
+            mb_na_linha = re.search(r'([\d.]+)\s*mb', line_clean)
+            if mb_na_linha:
+                val = float(mb_na_linha.group(1))
+                total_sum += val
+                if linha_com_chile: chile_sum += val
+                procurando_consumo = False # Já achou, desliga o alerta
+            continue
 
-        # Busca valores de MB dentro desta janela (ex: 48.99mb ou 48.99 mb)
-        mb_match = re.search(r'([\d.]+)\s*mb', window_text)
-        if mb_match:
-            try:
-                valor = float(mb_match.group(1))
-                total_sum += valor
-                if 'chile' in window_text:
-                    chile_sum += valor
-            except: pass
+        # Se estiver em alerta (achou data antes), procura o MB nesta linha
+        if procurando_consumo:
+            if 'chile' in line_clean: linha_com_chile = True
+            
+            mb_match = re.search(r'([\d.]+)\s*mb', line_clean)
+            if mb_match:
+                try:
+                    val = float(mb_match.group(1))
+                    total_sum += val
+                    if linha_com_chile: chile_sum += val
+                    procurando_consumo = False # Valor encontrado, desliga alerta
+                except: pass
 
-    # 5. Validação e Formatação
-    # Se a soma das janelas falhar, usamos o cabeçalho como valor total
-    final_total = total_sum if total_sum > 0 else header_volume
+    # 5. Validação Final
+    # Se a soma das linhas for muito discrepante ou zero, usa o cabeçalho
+    final_total = total_sum if total_sum > 0 else header_total
     
-    formatted_total = f"{final_total:.2f}".replace('.', ',')
-    formatted_chile = f"{chile_sum:.2f}".replace('.', ',')
-
     return [{
         "numero": phone_number,
-        "consumo_total": formatted_total,
-        "consumo_chile": formatted_chile
+        "consumo_total": f"{final_total:.2f}".replace('.', ','),
+        "consumo_chile": f"{chile_sum:.2f}".replace('.', ',')
     }]
 
 @app.route('/processar', methods=['POST'])
@@ -81,10 +86,9 @@ def process_pdf():
             full_text = ""
             for page in pdf.pages:
                 full_text += (page.extract_text() or "") + "\n"
-            if not full_text.strip():
-                return jsonify({"error": "PDF sem texto extraível"}), 500
             return jsonify({"dados": parse_text(full_text)}), 200
     except Exception as e:
+        # Retorna o erro real para ajudar no debug
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
