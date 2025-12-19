@@ -7,64 +7,63 @@ app = Flask(__name__)
 
 def parse_text(text):
     """
-    Função robusta para extrair informações agregadas (v5 - Ultra Flexível).
+    Versão 8: Abordagem de fluxo contínuo. Busca o consumo em uma 'janela' 
+    após cada data, ignorando quebras de linha e aspas.
     """
-    # Limpeza inicial: remove aspas que podem vir na extração de tabelas
+    # 1. Limpeza de aspas para evitar quebras no regex
     text = text.replace('"', '').replace("'", "")
     
-    # Regex flexível para o número de telefone (captura com ou sem +55)
+    # 2. Extração do Telefone (Padrão: No. +55...)
     phone_pattern = re.compile(r'No\.\s*(\+?\d+)')
-    # Regex flexível para Volume Total (pega o número antes de MB)
-    total_volume_pattern = re.compile(r'Volume total:\s*([\d,.]+)', re.IGNORECASE)
-    
     phone_match = phone_pattern.search(text)
-    total_volume_match = total_volume_pattern.search(text)
-    
-    # --- Extração do Telefone ---
     phone_number = "Não encontrado"
     if phone_match:
         phone_raw = phone_match.group(1)
         phone_number = phone_raw[3:] if phone_raw.startswith("+55") else phone_raw
     
-    # --- Extração do Volume Total do Cabeçalho ---
-    total_header_volume = "0,00"
-    if total_volume_match:
-        val = total_volume_match.group(1).replace(',', '')
-        total_header_volume = f"{float(val):.2f}".replace('.', ',')
+    # 3. Volume do Cabeçalho como Backup (Ex: 7997.42MB)
+    header_volume = 0.0
+    header_match = re.search(r'Volume total:\s*([\d,.]+)', text, re.IGNORECASE)
+    if header_match:
+        try:
+            header_volume = float(header_match.group(1).replace(',', ''))
+        except: pass
 
-    # Regex para identificar a linha pela DATA (formato DD/MM/AAAA)
-    # Captura a data e o restante da linha para processamento manual
-    date_regex = re.compile(r'(\d{2}/\d{2}/\d{4})\s+(.*)')
-
+    # 4. Processamento por 'Janelas' de Data
     total_sum = 0.0
     chile_sum = 0.0
     
-    lines = text.split('\n')
-    for line in lines:
-        match = date_regex.search(line)
-        if match:
-            data_str = match.group(1)
-            resto_linha = match.group(2)
-            
-            # Busca todos os valores de consumo na linha (números seguidos de MB)
-            consumos = re.findall(r'([\d.]+)\s*MB', resto_linha, re.IGNORECASE)
-            
-            if consumos:
-                # O primeiro valor de MB na linha costuma ser o 'Realizado'
-                valor_realizado = float(consumos[0])
-                total_sum += valor_realizado
-                
-                # Verifica se a palavra 'Chile' aparece em qualquer lugar desta linha
-                if 'chile' in line.lower():
-                    chile_sum += valor_realizado
+    # Localiza todas as datas (DD/MM/AAAA) e suas posições no texto
+    date_matches = list(re.finditer(r'(\d{2}/\d{2}/\d{4})', text))
+    
+    for i in range(len(date_matches)):
+        start_pos = date_matches[i].start()
+        # A janela vai desta data até a próxima data (ou fim do texto)
+        end_pos = date_matches[i+1].start() if i+1 < len(date_matches) else len(text)
+        window_text = text[start_pos:end_pos].lower()
+        
+        # Ignora a primeira data se for a do cabeçalho (geralmente isolada no topo)
+        if i == 0 and "detalhamento" not in window_text:
+             # Se a primeira data for apenas a data de emissão do relatório, pulamos
+             if "roaming" in window_text or "detalhamento" in window_text:
+                 continue
 
-    # Formatação Final
-    formatted_total = f"{total_sum:.2f}".replace('.', ',')
+        # Busca valores de MB dentro desta janela (ex: 48.99mb ou 48.99 mb)
+        mb_match = re.search(r'([\d.]+)\s*mb', window_text)
+        if mb_match:
+            try:
+                valor = float(mb_match.group(1))
+                total_sum += valor
+                if 'chile' in window_text:
+                    chile_sum += valor
+            except: pass
+
+    # 5. Validação e Formatação
+    # Se a soma das janelas falhar, usamos o cabeçalho como valor total
+    final_total = total_sum if total_sum > 0 else header_volume
+    
+    formatted_total = f"{final_total:.2f}".replace('.', ',')
     formatted_chile = f"{chile_sum:.2f}".replace('.', ',')
-
-    # Se o total somado for 0, usamos o volume do cabeçalho como fallback para o total
-    if total_sum == 0 and total_header_volume != "0,00":
-        formatted_total = total_header_volume
 
     return [{
         "numero": phone_number,
@@ -75,21 +74,18 @@ def parse_text(text):
 @app.route('/processar', methods=['POST'])
 def process_pdf():
     if 'file' not in request.files:
-        return jsonify({"error": "Nenhum arquivo enviado"}), 400
-
+        return jsonify({"dados": []}), 200
     file = request.files['file']
-    if file and file.filename.lower().endswith('.pdf'):
-        try:
-            with pdfplumber.open(file) as pdf:
-                full_text = ""
-                for page in pdf.pages:
-                    full_text += (page.extract_text() or "") + "\n"
-                
-                dados = parse_text(full_text)
-                return jsonify({"dados": dados}), 200
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    return jsonify({"error": "Arquivo inválido"}), 400
+    try:
+        with pdfplumber.open(file) as pdf:
+            full_text = ""
+            for page in pdf.pages:
+                full_text += (page.extract_text() or "") + "\n"
+            if not full_text.strip():
+                return jsonify({"error": "PDF sem texto extraível"}), 500
+            return jsonify({"dados": parse_text(full_text)}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.environ.get("PORT", 5000)))
